@@ -964,6 +964,8 @@ private:
         result.timings.prepare_seconds = request->prepare_seconds;
         result.speculative             = std::move(request->speculative_stats);
         result.next_token_top_logprobs = std::move(request->next_token_top_logprobs);
+        result.first_token_logprob     = request->first_token_logprob;
+        result.prompt_token_logprobs   = std::move(request->prompt_token_logprobs);
         result.thinking                = request->output.thinking_stats();
         result.materialization         = request->materialization_diagnostics;
         if (request->first_token) {
@@ -1488,6 +1490,8 @@ private:
         }
         request->begin = progress.summary;
         request->next_token_top_logprobs = std::move(progress.next_token_top_logprobs);
+        request->first_token_logprob     = progress.first_token_logprob;
+        request->prompt_token_logprobs   = std::move(progress.prompt_token_logprobs);
         const std::array<std::uint32_t, 1> lanes{lane};
         phase.finish();
         commit_pending(std::move(*progress.pending), lanes, false, cancelled_at_unit_start);

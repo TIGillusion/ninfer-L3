@@ -180,6 +180,9 @@ set_tests_properties(ninfer_qwen3_6_35b_a3b_dflash_load_plan_test
 ninfer_add_test(ninfer_openai_schema_test
   SOURCES test_openai_schema.cpp
   LIBRARIES ninfer_serve)
+ninfer_add_test(ninfer_research_api_test
+  SOURCES test_research_api.cpp
+  LIBRARIES ninfer_serve)
 ninfer_add_test(ninfer_openai_responses_test
   SOURCES test_openai_responses.cpp
   LIBRARIES ninfer_serve)

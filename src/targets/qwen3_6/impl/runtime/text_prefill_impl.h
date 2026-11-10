@@ -37,6 +37,7 @@ void configure_text_card(TextContext& card, const ExecutionCore& execution,
                          std::int32_t state_destination_slot, std::uint32_t mtp_proposal_extent) {
     card.set_sampling(sampling);
     card.set_next_token_logits_capture(execution.next_token_logits_capture);
+    card.set_prompt_score_capture(execution.prompt_score_scratch);
     card.set_linear_state_slots(state_source_slot, state_destination_slot);
     card.set_gdn_state_action(GdnStateAction::UpdateInPlace, nullptr);
     card.set_mtp_proposal_extent(mtp_proposal_extent);

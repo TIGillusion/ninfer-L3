@@ -123,6 +123,10 @@ struct PrefillChunkResult {
     std::uint32_t processed_tokens = 0;
     bool finalized                 = false;
     runtime::ExecutionTiming timing;
+    // Prompt scoring export: absolute position of the first scored slot and how many
+    // consecutive slots this chunk wrote into the caller's scratch (0 = no export).
+    std::uint32_t score_first_slot = 0;
+    std::uint32_t score_slot_count = 0;
 };
 
 struct DFlashFeatureSink {
@@ -175,6 +179,13 @@ public:
     // next-token logit row into this caller-owned pinned host buffer right after sampling.
     void set_next_token_logits_capture(void* capture) noexcept {
         next_token_logits_capture_ = capture;
+    }
+
+    // Opt-in prompt scoring export: when set, each text prefill chunk computes teacher-forced
+    // per-position target logprobs into this caller-owned pinned scratch (prefill_chunk FP32
+    // entries), consumed by the caller after the chunk's synchronize. Text-only requests only.
+    void set_prompt_score_capture(float* scratch) noexcept {
+        prompt_score_scratch_ = scratch;
     }
 
     void set_prefill_split_frontier(std::int64_t position) noexcept {
@@ -332,6 +343,7 @@ private:
     int proposal_head_n_                        = 0;
     const ops::SamplingConfig* sampling_config_ = nullptr;
     void* next_token_logits_capture_            = nullptr;
+    float* prompt_score_scratch_                = nullptr;
     MtpW mtp_;
     std::array<FullLayerW, TextConfig::full_attention_layers()> full_{};
     std::array<GdnLayerW, TextConfig::gdn_layers()> gdn_{};

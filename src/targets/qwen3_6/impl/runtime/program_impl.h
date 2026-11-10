@@ -3974,6 +3974,19 @@ bool ProgramImplCore::progress_disk_seed(SequenceState& sequence,
     poll_seed_batch(progress, std::chrono::steady_clock::now());
     const auto fail = [&]() {
         progress.failing = true;
+        // Drain in-flight restore H2D on the transfer stream before the rollback
+        // frees/recycles destination pages: a landing stale copy must never
+        // overwrite a page another lane has already reallocated on device.stream.
+        if (device.transfer_stream != nullptr) {
+            const auto h2d_drained = cudaStreamSynchronize(device.transfer_stream);
+            if (h2d_drained != cudaSuccess) {
+                disk_kv_logf('E', "l3-seed-yield",
+                             "h2d drain failed: %s | restart required",
+                             cudaGetErrorString(h2d_drained));
+                fflush(stderr);
+                std::_Exit(70);   // device state can no longer be trusted
+            }
+        }
         // An accepted CPU borrow is irrevocable. Do not release the lease or
         // owner on an exception until its terminal acquire acknowledgement.
         poll_seed_batch(progress, std::chrono::steady_clock::now());
@@ -4210,11 +4223,18 @@ bool ProgramImplCore::progress_disk_seed(SequenceState& sequence,
             }
             if (prefix == progress.copied_pages) { return; }
             const std::uint32_t count = prefix - progress.copied_pages;
+            // H2D on the dedicated transfer stream: decode kernels stay on
+            // device.stream, so the restore's bulk copies overlap decode on the
+            // DMA engine instead of serializing every decode step behind them
+            // (device.stream sharing throttled decode to ~50% during restores).
+            // Consumers are safe: the restored pages belong to the not-yet-
+            // admitted materializing sequence, and both completion and failure
+            // paths synchronize this stream before anything else touches them.
             pages->physical_pool().copy_from_host(
                 host_kv_arena->view(*scratch).subview(progress.copied_pages, count),
                 std::span<const DeviceKVPageHandle>(progress.batch_destinations.data() + progress.copied_pages,
                                                     count),
-                device.stream);
+                device.transfer_stream);
             progress.copied_pages = prefix;
         };
         if (!progress.batch_open) {
@@ -4379,6 +4399,12 @@ bool ProgramImplCore::progress_disk_seed(SequenceState& sequence,
             progress.pages_read, static_cast<unsigned long long>(progress.batches), progress.max_batch,
             static_cast<unsigned long long>(disk_stats_at_yield.restores),
             static_cast<unsigned long long>(disk_stats_at_yield.restore_misses));
+    // Restore complete: drain the transfer-stream tail once so every restored
+    // page is landed before any later device.stream work reads it. The CPU
+    // waits only for the last batch tail (~one batch of H2D).
+    if (device.transfer_stream != nullptr) {
+        CUDA_CHECK(cudaStreamSynchronize(device.transfer_stream));
+    }
     return true;
     } catch (const std::exception& error) {
         disk_kv_logf('E', "l3-seed-yield",
@@ -9374,6 +9400,8 @@ PrefillProgress ProgramImplCore::wrap_prefill(std::uint32_t lane, runtime::Prefi
     out.complete                = step.complete;
     out.timing                  = step.timing;
     out.next_token_top_logprobs = std::move(step.next_token_top_logprobs);
+    out.first_token_logprob     = step.first_token_logprob;
+    out.prompt_token_logprobs   = std::move(step.prompt_token_logprobs);
     if (step.complete) {
         const std::array<std::uint32_t, 1> lanes{lane};
         const runtime::BatchedGeneratedRound round{
@@ -12292,6 +12320,7 @@ void ProgramImplCore::finalize_sequence(std::uint32_t lane, SequenceState& seque
     try {
         install_sampling(sequence, request, request_plan.sampling);
         request.top_logprobs = request_plan.top_logprobs;
+        request.prompt_logprobs = request_plan.prompt_logprobs;
         sequence.rope_delta = staged.prompt.rope_delta;
         set_device_i32(io.rope_delta, sequence.rope_delta);
 
@@ -13910,11 +13939,19 @@ namespace {
 // Exact full-vocabulary softmax + top-K over one staged next-token logit row (BF16).
 // CPU-only, called once per exported request after the prefill step synchronized. The
 // probabilities are the raw model distribution (no sampling temperature/penalties).
-std::optional<std::vector<::ninfer::TopLogprob>>
-compute_next_token_top_logprobs(const void* logits_host, std::uint32_t top_k) {
+// sampled_logprob is the natural-log probability of the actually sampled first token
+// under the same distribution when it lies inside the token domain.
+struct NextTokenExport {
+    std::vector<::ninfer::TopLogprob> top;
+    std::optional<float> sampled_logprob;
+};
+
+NextTokenExport compute_next_token_top_logprobs(const void* logits_host, std::uint32_t top_k,
+                                                std::uint32_t sampled_token) {
     constexpr std::size_t vocab = TextConfig::token_domain;
     const std::size_t k = std::min<std::size_t>(top_k, vocab);
-    if (k == 0) { return std::nullopt; }
+    NextTokenExport out;
+    if (k == 0) { return out; }
     const auto* raw = static_cast<const std::uint16_t*>(logits_host);
     std::vector<float> z(vocab);
     float z_max = -std::numeric_limits<float>::infinity();
@@ -13929,16 +13966,21 @@ compute_next_token_top_logprobs(const void* logits_host, std::uint32_t top_k) {
         z[i] = std::exp(z[i] - z_max);
         denominator += z[i];
     }
+    if (sampled_token < vocab) {
+        const float probability = static_cast<float>(z[sampled_token] / denominator);
+        if (probability > 0.0F) { out.sampled_logprob = std::log(probability); }
+    }
     std::vector<std::size_t> order(vocab);
     std::iota(order.begin(), order.end(), 0);
     std::partial_sort(order.begin(), order.begin() + k, order.end(),
                       [&z](std::size_t a, std::size_t b) { return z[a] > z[b]; });
-    std::vector<::ninfer::TopLogprob> out;
-    out.reserve(k);
+    out.top.reserve(k);
     for (std::size_t i = 0; i < k; ++i) {
-        out.push_back(::ninfer::TopLogprob{
+        const float probability = static_cast<float>(z[order[i]] / denominator);
+        out.top.push_back(::ninfer::TopLogprob{
             .token_id    = static_cast<std::uint32_t>(order[i]),
-            .probability = static_cast<float>(z[order[i]] / denominator)});
+            .probability = probability,
+            .logprob     = probability > 0.0F ? std::log(probability) : 0.0F});
     }
     return out;
 }
@@ -14022,10 +14064,23 @@ ProgramImplCore::advance_prefill(SequenceState& sequence, RequestControl& reques
             }
             next_token_capture = top_logprobs_host->data();
         }
+        // Prompt scoring export: a per-chunk pinned scratch the text prefill flushes the
+        // teacher-forced target logprobs into (valid after each chunk's synchronize).
+        float* prompt_score_scratch = nullptr;
+        if (request.prompt_logprobs) {
+            if (!prompt_score_host) {
+                prompt_score_host.emplace(static_cast<std::size_t>(prefill_chunk) *
+                                          sizeof(float));
+            }
+            prompt_score_scratch = static_cast<float*>(prompt_score_host->data());
+            if (staged.prompt_score.empty()) {
+                staged.prompt_score.assign(staged.prompt_tokens, 0.0F);
+            }
+        }
         schedule::PrefillContext schedule_state{
             {device, model, work, state_images->linear(),
              replay_records ? &*replay_records : nullptr, io, prefill_hidden, prefill_chunk,
-             proposal_head, next_token_capture},
+             proposal_head, next_token_capture, prompt_score_scratch},
             text_kv_view(sequence),
             mtp_kv_view(sequence),
             decoder->text_kv,
@@ -14129,6 +14184,17 @@ ProgramImplCore::advance_prefill(SequenceState& sequence, RequestControl& reques
                 timing.resume_post();
                 if (result.processed_tokens == 0 || result.processed_tokens > remaining) {
                     throw std::logic_error("ordinary prefill chunk made invalid progress");
+                }
+                // Prompt scoring: the chunk synchronized inside prefill_text_chunk, so the
+                // scratch holds this chunk's scored slots and can be folded in immediately.
+                if (result.score_slot_count != 0) {
+                    if (staged.prompt_score.size() <
+                        static_cast<std::size_t>(result.score_first_slot) +
+                            result.score_slot_count) {
+                        throw std::logic_error("prompt score accumulator does not cover its chunk");
+                    }
+                    std::copy_n(prompt_score_scratch, result.score_slot_count,
+                                staged.prompt_score.begin() + result.score_first_slot);
                 }
                 if (staged.vision) { staged.vision->release_encoded_media_payloads(); }
                 staged.cursor += result.processed_tokens;
@@ -14437,10 +14503,20 @@ ProgramImplCore::advance_prefill(SequenceState& sequence, RequestControl& reques
         timing.begin_wait();
         device.synchronize();
         timing.end_wait();
+        std::optional<float> first_token_logprob;
         std::optional<std::vector<::ninfer::TopLogprob>> next_token_top_logprobs;
         if (next_token_capture != nullptr) {
-            next_token_top_logprobs =
-                compute_next_token_top_logprobs(next_token_capture, *request.top_logprobs);
+            NextTokenExport exported = compute_next_token_top_logprobs(
+                next_token_capture, *request.top_logprobs,
+                static_cast<std::uint32_t>(host_tokens[0]));
+            first_token_logprob     = std::move(exported.sampled_logprob);
+            next_token_top_logprobs = std::move(exported.top);
+        }
+        // Prompt scoring: fold the accumulated per-position logprobs into the step result
+        // before the staged prefill state resets below.
+        std::optional<std::vector<float>> prompt_token_logprobs;
+        if (request.prompt_logprobs) {
+            prompt_token_logprobs = std::move(staged.prompt_score);
         }
         staged.elapsed_seconds += std::chrono::duration<double>(Clock::now() - started).count();
         const double vision_seconds       = staged.vision ? staged.vision->elapsed_seconds() : 0.0;
@@ -14488,6 +14564,8 @@ ProgramImplCore::advance_prefill(SequenceState& sequence, RequestControl& reques
             .complete                = true,
             .timing                  = timing.finish(),
             .next_token_top_logprobs = std::move(next_token_top_logprobs),
+            .first_token_logprob     = std::move(first_token_logprob),
+            .prompt_token_logprobs   = std::move(prompt_token_logprobs),
         };
     } catch (...) {
         timing.begin_wait();

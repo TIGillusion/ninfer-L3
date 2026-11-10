@@ -236,11 +236,26 @@ std::string make_chat_completion_response(const OpenAIChatResponseIdentity& iden
         message["tool_calls"] = tool_calls_json(calls, false);
     }
 
+    // First-token logprob export (top_logprobs request): the Engine exports the exact raw
+    // distribution of the first generated token only, rendered as the single content entry
+    // of the OpenAI logprobs shape. Streaming responses keep logprobs = null.
+    Json logprobs = nullptr;
+    if (!outcome.next_token_top_logprobs.empty()) {
+        Json top = Json::array();
+        for (const auto& entry : outcome.next_token_top_logprobs) {
+            top.push_back({{"token", entry.token_text}, {"logprob", entry.logprob}});
+        }
+        Json first{{"top_logprobs", std::move(top)}};
+        if (outcome.first_token_logprob) { first["logprob"] = *outcome.first_token_logprob; }
+        if (!outcome.first_token_text.empty()) { first["token"] = outcome.first_token_text; }
+        logprobs = {{"content", Json::array({std::move(first)})}};
+    }
+
     Json payload       = base_payload(identity, "chat.completion");
     payload["choices"] = Json::array(
         {Json{{"index", 0},
               {"message", std::move(message)},
-              {"logprobs", nullptr},
+              {"logprobs", std::move(logprobs)},
               {"finish_reason",
                has_tool_calls ? Json("tool_calls") : Json(finish_reason(outcome.finish_reason))}}});
     payload["usage"]   = usage_json(usage_from(outcome));

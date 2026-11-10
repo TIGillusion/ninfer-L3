@@ -162,6 +162,10 @@ struct ResolvedExecutionOptions {
     ThinkingControlOptions thinking;
     // Top-K next-token probability export (see ninfer::RequestOptions::top_logprobs).
     std::optional<std::uint32_t> top_logprobs;
+    // Teacher-forced per-position prompt scoring (see ninfer::RequestOptions::prompt_logprobs).
+    // The Engine resolves this with allow_prefix_reuse = false: a scoring request must
+    // physically prefill the whole prompt, or the scored positions would have no hidden state.
+    bool prompt_logprobs = false;
 };
 
 struct ResolvedRequestOptions {
@@ -609,6 +613,14 @@ struct PrefillStepResult {
     // probabilities (resolved top_logprobs): the exact full-vocabulary top-K of the first
     // generated token. Absent for non-completing steps and requests without the export.
     std::optional<std::vector<::ninfer::TopLogprob>> next_token_top_logprobs;
+    // Exported only on the completing prefill step alongside next_token_top_logprobs: the
+    // natural-log probability of the actually sampled first token under the same raw
+    // prefill distribution. Absent when the export was not requested.
+    std::optional<float> first_token_logprob;
+    // Exported only on the completing prefill step when the request asked for prompt
+    // scoring (resolved prompt_logprobs): teacher-forced natural-log probability per
+    // prompt position, aligned with the prepared prompt token ids; entry 0 is unset.
+    std::optional<std::vector<float>> prompt_token_logprobs;
 };
 
 struct RoundBudget {

@@ -362,6 +362,8 @@ if(NINFER_BUILD_SERVE)
     serve/operational_log.cpp
     serve/request_log.cpp
     serve/http_server.cpp
+    serve/research_http.cpp
+    serve/research_request.cpp
     serve/openai_responses_http.cpp
     serve/serve_options.cpp)
   ninfer_internal_includes(ninfer_serve)

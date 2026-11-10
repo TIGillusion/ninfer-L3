@@ -397,6 +397,51 @@ int GenerationService::count_prompt_tokens(const GenerationRequest& request,
     }
 }
 
+std::vector<ninfer::TokenId> GenerationService::tokenize_text(std::string_view text) const {
+    try {
+        return engine_->tokenize_text(text);
+    } catch (const ninfer::RequestError& exception) { throw_request_error(exception); }
+    catch (const std::invalid_argument& exception) {
+        throw_invalid_input(exception, "invalid_prompt");
+    }
+    return {};
+}
+
+std::string GenerationService::decode_token(std::uint32_t token_id) const {
+    return engine_->decode_token(token_id);
+}
+
+PreparedRequest GenerationService::prepare_raw_tokens(std::vector<ninfer::TokenId> tokens,
+                                                      ninfer::RequestOptions options,
+                                                      std::function<bool()> is_cancelled) const {
+    PreparedRequest prepared;
+    prepared.lifetime = acquire_request_lifetime(DeadlinePolicy::ClientPendingTimeout);
+    try {
+        check_preparation_control(prepared.lifetime->deadline, is_cancelled);
+        const PreparationControl control{
+            .deadline     = prepared.lifetime->deadline,
+            .cancellation = CancellationView(is_cancelled),
+        };
+        // Fresh identity: a scoring request must physically prefill its whole prompt.
+        ninfer::PreparedPrompt prompt =
+            engine_->prepare_tokens(std::move(tokens), /*allow_prefix_identity=*/false);
+        check_preparation_control(prepared.lifetime->deadline, is_cancelled);
+        prepared.prompt_tokens = static_cast<int>(prompt.summary().prompt_tokens);
+        prepared.preparation   = prompt.preparation_stats();
+        prepared.prepare_seconds =
+            std::chrono::duration<double>(Clock::now() - prepared.lifetime->started).count();
+        prepared.generation = engine_->submit(std::move(prompt), std::move(options),
+                                              ninfer::OutputConsumerMode::Aggregate, {},
+                                              prepared.lifetime->deadline);
+        prepared.sampling = prepared.generation.resolved_sampling();
+    } catch (const ApiException&) { throw; } catch (const ninfer::RequestError& exception) {
+        throw_request_error(exception);
+    } catch (const std::invalid_argument& exception) {
+        throw_invalid_input(exception, "invalid_prompt");
+    }
+    return prepared;
+}
+
 GenerationOutcome GenerationService::run(PreparedRequest& prepared, const StreamSink* sink,
                                          std::function<bool()> is_cancelled) {
     std::unique_ptr<ServiceOutputSink> output_sink;
@@ -431,6 +476,14 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
         } catch (const std::exception&) {
             entry.token_text.clear();
         }
+    }
+    outcome.first_token_logprob   = result.first_token_logprob;
+    outcome.prompt_token_logprobs = std::move(result.prompt_token_logprobs);
+    if (!result.generated_token_ids.empty()) {
+        outcome.first_token_id = static_cast<std::uint32_t>(result.generated_token_ids.front());
+        try {
+            outcome.first_token_text = engine_->decode_token(*outcome.first_token_id);
+        } catch (const std::exception&) { outcome.first_token_text.clear(); }
     }
 
     outcome.metrics.prepare_seconds = prepared.prepare_seconds;

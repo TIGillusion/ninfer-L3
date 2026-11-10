@@ -21,6 +21,10 @@ namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS {
 
 using TensorLayout                              = TensorRegion;
 inline constexpr std::uint32_t kCausalScoreTile = 1024;
+// Sub-tile width for the production-prefill prompt scoring export: the BF16 lm_head tile is
+// output_rows x width (64 x 248320 x 2B ~= 31.7 MiB), sized to coexist with the chunk's
+// activations inside the shared workspace without enlarging its reservation.
+inline constexpr std::uint32_t kPromptScoreTile = 64;
 
 struct DFlashPersistentLayout {
     qwen3_6::PagedKVCacheLayout full;

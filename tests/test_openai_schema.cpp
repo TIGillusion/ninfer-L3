@@ -147,7 +147,16 @@ int test_standard_field_policy() {
     rejected("n", 2, "n_not_supported");
     rejected("logit_bias", Json{{"12", 1}}, "logit_bias_not_supported");
     rejected("logprobs", true, "logprobs_not_supported");
-    rejected("top_logprobs", 2, "logprobs_not_supported");
+    // top_logprobs in [1,100] is accepted (first-token distribution export); only the
+    // range is rejected, with no named code.
+    {
+        Json accepted            = base_request();
+        accepted["top_logprobs"] = 2;
+        failures += check(api_error([&] { (void)parse(accepted); }).param.empty(),
+                          "top_logprobs in range accepted");
+    }
+    rejected("top_logprobs", 101, "");
+    rejected("top_logprobs", 0, "");
     rejected("response_format", Json{{"type", "json_schema"}}, "response_format_not_supported");
     rejected("modalities", Json::array({"text", "audio"}), "modality_not_supported");
     rejected("web_search_options", Json::object(), "web_search_not_supported");
@@ -156,12 +165,12 @@ int test_standard_field_policy() {
     rejected("store", true, "store_not_supported");
     rejected("functions", Json::array({Json{{"name", "legacy"}}}), "legacy_tools_not_supported");
 
-    Json neutral                      = base_request();
-    neutral["n"]                      = 1;
-    neutral["logit_bias"]             = Json{{"12", 0}, {"13", 0.0}};
-    neutral["logprobs"]               = false;
-    neutral["top_logprobs"]           = 0;
-    neutral["response_format"]        = Json{{"type", "text"}};
+    Json neutral            = base_request();
+    neutral["n"]            = 1;
+    neutral["logit_bias"]   = Json{{"12", 0}, {"13", 0.0}};
+    neutral["logprobs"]     = false;
+    neutral["top_logprobs"] = 10;
+    neutral["response_format"] = Json{{"type", "text"}};
     neutral["modalities"]             = Json::array({"text"});
     neutral["audio"]                  = Json{{"voice", "alloy"}};
     neutral["prediction"]             = Json{{"type", "content"}, {"content", "expected"}};

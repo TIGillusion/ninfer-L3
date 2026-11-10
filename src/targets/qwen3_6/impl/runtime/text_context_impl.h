@@ -28,6 +28,7 @@
 #include "ninfer/ops/scalar.h"
 #include "ninfer/ops/sigmoid_mul.h"
 #include "ninfer/ops/silu_mul.h"
+#include "ninfer/ops/target_logprobs.h"
 #include "ninfer/ops/softmax_attention.h"
 
 #include <cuda_runtime.h>
@@ -1103,6 +1104,9 @@ TextContext::prefill_impl(std::span<const int> ids, const TextPrefill* text_pref
         throw std::logic_error("MTP proposal extent exceeds the configured draft window");
     }
     int t0 = 0;
+    // Prompt scoring export carried out of the chunk block for the result (text-only).
+    std::uint32_t score_first_slot = 0;
+    std::uint32_t score_slot_count = 0;
     for (; t0 < T;) {
         int len = std::min(chunk, T - t0);
         if (split_rel > 0 && t0 < split_rel && t0 + len > split_rel) { len = split_rel - t0; }
@@ -1190,6 +1194,58 @@ TextContext::prefill_impl(std::span<const int> ids, const TextPrefill* text_pref
                             ? matrix_window(prefill_hidden_, len)
                             : work_.alloc(DType::BF16, {kCfg.hidden, len});
             ops::rmsnorm(x, *final_norm_, kCfg.rms_eps, true, xf, s);
+
+            // Prompt scoring export (opt-in, text-only): teacher-forced log p(next | prefix)
+            // for every scored column of this chunk. Column j sits at absolute position
+            // p = base + t0 + j and scores target p+1; the final prompt position has no
+            // in-prompt target, so scored columns are the contiguous prefix [0, scored_end).
+            // Sub-tiles keep the lm_head logits tile inside the shared workspace. The D2H is
+            // ordered by the synchronize at the end of this call, before the caller reads the
+            // scratch. Runs before the is_last block: the tile never aliases io_.logits,
+            // which the sampling step and the MTP bridge reuse.
+            if (prompt_score_scratch_ != nullptr && multimodal == nullptr) {
+                const std::span<const int> full_ids =
+                    text_prefill != nullptr ? text_prefill->token_ids : ids;
+                const std::uint32_t full_begin =
+                    text_prefill != nullptr ? static_cast<std::uint32_t>(text_prefill->begin)
+                                            : base;
+                const std::uint32_t total =
+                    full_begin + static_cast<std::uint32_t>(full_ids.size());
+                while (score_slot_count < static_cast<std::uint32_t>(len) &&
+                       full_begin + static_cast<std::uint32_t>(t0) + score_slot_count + 1 <
+                           total) {
+                    ++score_slot_count;
+                }
+                score_first_slot = full_begin + static_cast<std::uint32_t>(t0) + 1;
+                if (score_slot_count != 0) {
+                    Tensor tile_logits = work_.alloc(
+                        DType::BF16, {kCfg.vocab, static_cast<std::int32_t>(kPromptScoreTile)});
+                    Tensor tile_targets = work_.alloc(DType::I32, {kPromptScoreTile});
+                    Tensor tile_logprobs = work_.alloc(DType::FP32, {kPromptScoreTile});
+                    for (std::uint32_t c0 = 0; c0 < score_slot_count; c0 += kPromptScoreTile) {
+                        const std::uint32_t cols =
+                            std::min<std::uint32_t>(kPromptScoreTile, score_slot_count - c0);
+                        std::vector<std::int32_t> targets(cols);
+                        for (std::uint32_t j = 0; j < cols; ++j) {
+                            targets[j] =
+                                full_ids[static_cast<std::size_t>(t0) + c0 + j + 1];
+                        }
+                        Tensor tile_targets_view = tile_targets.slice(0, 0, cols);
+                        copy_i32(targets.data(), tile_targets_view, s);
+                        Tensor tile_logits_view = tile_logits.slice(1, 0, cols);
+                        Tensor tile_out_view    = tile_logprobs.slice(0, 0, cols);
+                        ops::linear(xf.slice(1, static_cast<std::int32_t>(c0),
+                                             static_cast<std::int32_t>(cols)),
+                                    *lm_head_, tile_logits_view, s);
+                        ops::target_logprobs(tile_logits_view, tile_targets_view,
+                                             static_cast<std::int32_t>(kCfg.token_domain),
+                                             tile_out_view, s);
+                        CUDA_CHECK(cudaMemcpyAsync(prompt_score_scratch_ + c0,
+                                                   tile_logprobs.data, cols * sizeof(float),
+                                                   cudaMemcpyDeviceToHost, s));
+                    }
+                }
+            }
 
             if (is_last) {
                 Tensor last_xf = xf.slice(1, len - 1, 1);
@@ -1322,7 +1378,9 @@ TextContext::prefill_impl(std::span<const int> ids, const TextPrefill* text_pref
     work_.reset();
     return PrefillChunkResult{.processed_tokens = static_cast<std::uint32_t>(t0),
                               .finalized        = finalize_at_end && t0 == T,
-                              .timing           = timing.finish()};
+                              .timing           = timing.finish(),
+                              .score_first_slot = score_first_slot,
+                              .score_slot_count = score_slot_count};
 }
 
 PrefillChunkResult TextContext::prefill_chunk(std::span<const int> full_ids, std::uint32_t begin,

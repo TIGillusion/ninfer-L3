@@ -150,6 +150,8 @@ const char* endpoint_name(std::string_view path) noexcept {
     if (path == "/v1/responses/input_tokens") { return "openai_responses_input_tokens"; }
     if (path == "/v1/messages") { return "anthropic_messages"; }
     if (path == "/v1/messages/count_tokens") { return "anthropic_count_tokens"; }
+    if (path == "/v1/score") { return "research_score"; }
+    if (path == "/v1/next-token") { return "research_next_token"; }
     return "http_route";
 }
 
@@ -556,6 +558,12 @@ void HttpServer::register_routes() {
                  [this](const httplib::Request& req, httplib::Response& res) {
                      handle_chat_completions(req, res);
                  });
+    server_.Post("/v1/score", [this](const httplib::Request& req, httplib::Response& res) {
+        handle_score(req, res);
+    });
+    server_.Post("/v1/next-token", [this](const httplib::Request& req, httplib::Response& res) {
+        handle_next_token(req, res);
+    });
     server_.Post("/v1/responses", [this](const httplib::Request& req, httplib::Response& res) {
         handle_responses(req, res);
     });

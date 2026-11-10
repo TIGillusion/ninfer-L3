@@ -8,9 +8,14 @@
 
 #include <spdlog/logger.h>
 
+#include <sys/mman.h>
+
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <cstdio>
+#include <cstring>
 #include <exception>
 #include <iostream>
 #include <memory>
@@ -93,6 +98,58 @@ int main(int argc, char** argv) {
         }
         operational_log.warmup_complete(
             std::chrono::duration<double>(Clock::now() - warmup_started).count());
+        // Lock anonymous (heap / host-KV pool) mappings after warmup:
+        // the decode orchestrator lives here. Named mappings (weights mmap,
+        // driver shmem) are excluded - locking the 12.4GB weights mmap
+        // OOM-locked the whole guest. We lock ranges 64MB-6GB with no path.
+        {
+            unsigned long locked_bytes = 0;
+            int locked_ranges = 0;
+            FILE *sm = fopen("/proc/self/smaps", "r");
+            if (sm) {
+                char buf[512];
+                unsigned long rs = 0, rn = 0;
+                long sz_kb = 0;
+                int is_anon = 0;
+                while (fgets(buf, sizeof(buf), sm)) {
+                    unsigned long a = 0, b = 0;
+                    char perms[8] = {0};
+                    int used = 0;
+                    if (sscanf(buf, "%lx-%lx %7s %*s %*s %*s %n", &a, &b, perms, &used) >= 3) {
+                        // flush previous: lock if anon and 64MB..6GB
+                        if (is_anon && sz_kb >= 65536 && (unsigned long)sz_kb <= 6291456) {
+                            if (mlock((const void *)rs, (size_t)sz_kb * 1024) == 0) {
+                                locked_bytes += (unsigned long)sz_kb * 1024;
+                                locked_ranges++;
+                            }
+                        }
+                        rs = a; rn = b;
+                        // anon = nothing but whitespace after inode
+                        is_anon = 1;
+                        for (int i = used; buf[i] && buf[i] != '\n'; i++) {
+                            if (buf[i] != ' ' && buf[i] != '\t') { is_anon = 0; break; }
+                        }
+                    } else if (strncmp(buf, "Size:", 5) == 0) {
+                        sz_kb = strtol(buf + 5, NULL, 10);
+                    } else if (strncmp(buf, "Name:", 5) == 0) {
+                        const char *p = buf + 5;
+                        while (*p == ' ' || *p == '\t') p++;
+                        if (*p && *p != '\n') is_anon = 0;
+                    }
+                }
+                fclose(sm);
+                // flush last region
+                if (is_anon && sz_kb >= 65536 && (unsigned long)sz_kb <= 6291456) {
+                    if (mlock((const void *)rs, (size_t)sz_kb * 1024) == 0) {
+                        locked_bytes += (unsigned long)sz_kb * 1024;
+                        locked_ranges++;
+                    }
+                }
+            }
+            fprintf(stderr, "[serve] mlock-anon: locked %d ranges, %.2f GB pinned\n",
+                    locked_ranges, locked_bytes / 1073741824.0);
+            fflush(stderr);
+        }
         server.attach(service);
 
         g_server.store(&server);

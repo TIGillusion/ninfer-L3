@@ -57,6 +57,13 @@ struct GenerationOutcome {
     std::optional<std::string> matched_stop_string;
     // Next-token top-K distribution of the first generated token (empty when not requested).
     std::vector<ninfer::TopLogprob> next_token_top_logprobs;
+    // Natural-log probability of the sampled first token under that distribution.
+    std::optional<float> first_token_logprob;
+    // The sampled first generated token, for rendering the OpenAI logprobs shape.
+    std::optional<std::uint32_t> first_token_id;
+    std::string first_token_text;
+    // Teacher-forced per-position prompt logprobs (set when the request asked for scoring).
+    std::optional<std::vector<float>> prompt_token_logprobs;
     GenerationMetrics metrics;
 };
 
@@ -135,6 +142,16 @@ public:
                                           ContextCacheHints context_cache = {}) const;
     [[nodiscard]] int count_prompt_tokens(const GenerationRequest& req,
                                           std::function<bool()> is_cancelled = {}) const;
+
+    // Research interface: raw-text ingestion without the chat template. tokenize_text applies
+    // the artifact tokenizer only; prepare_raw_tokens submits the token sequence with the
+    // caller's options (e.g. prompt_logprobs or top_logprobs) through the normal FIFO path.
+    [[nodiscard]] std::vector<ninfer::TokenId> tokenize_text(std::string_view text) const;
+    // Artifact-tokenizer surface rendering for one token id (research response payloads).
+    [[nodiscard]] std::string decode_token(std::uint32_t token_id) const;
+    [[nodiscard]] PreparedRequest prepare_raw_tokens(std::vector<ninfer::TokenId> tokens,
+                                                     ninfer::RequestOptions options,
+                                                     std::function<bool()> is_cancelled = {}) const;
 
     // Consumes prepared.generation. A PreparedRequest is single-use.
     GenerationOutcome run(PreparedRequest& prepared, const StreamSink* sink,

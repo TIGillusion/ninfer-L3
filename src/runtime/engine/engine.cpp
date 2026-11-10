@@ -116,6 +116,13 @@ runtime::ResolvedRequestOptions resolve_request_options(const ModelSamplingDefau
         throw std::invalid_argument("top_logprobs must be in [1,100]");
     }
     resolved.execution.top_logprobs            = options.top_logprobs;
+    resolved.execution.prompt_logprobs         = options.prompt_logprobs;
+    if (options.prompt_logprobs) {
+        // Scoring needs the hidden state of every prompt position: a reused prefix would
+        // leave those positions without a fresh forward pass. Force the fresh-full-prefill
+        // contract so the export always covers the complete prompt.
+        resolved.execution.allow_prefix_reuse = false;
+    }
     resolved.stop                              = std::move(options.stop);
     resolved.output                            = options.output;
     return resolved;

@@ -41,6 +41,10 @@ struct ExecutionCore {
     // When non-null: the first prefill sample additionally stages the raw next-token logit row
     // (token_domain BF16) into this pinned host buffer, before any MTP bridge overwrites it.
     void* next_token_logits_capture = nullptr;
+    // When non-null: each text prefill chunk additionally computes teacher-forced per-position
+    // target logprobs into this pinned host buffer (prefill_chunk FP32 entries, consumed by
+    // the caller after the chunk's synchronize). Text-only requests only.
+    float* prompt_score_scratch = nullptr;
 };
 
 struct PrefillContext {

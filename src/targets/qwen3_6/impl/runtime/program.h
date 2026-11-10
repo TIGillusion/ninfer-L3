@@ -194,6 +194,7 @@ struct RequestBasePlanImpl<NINFER_QWEN36_VARIANT> {
     qwen3_6::PreparedContextCache context_cache;
     ops::SamplingConfig sampling;
     std::optional<std::uint32_t> top_logprobs;
+    bool prompt_logprobs = false;
     std::uint32_t text_kv_page_entitlement    = 0;
     std::uint32_t backend_kv_page_entitlement = 0;
     std::shared_ptr<const qwen3_6::VisionControlPlan> vision_control_plan;
@@ -267,6 +268,7 @@ struct AdmissionCandidateImpl<NINFER_QWEN36_VARIANT> : ResourceCandidateState {
     std::vector<NINFER_QWEN36_RUNTIME_NS::CaptureGroup> shared_candidates;
     ops::SamplingConfig sampling;
     std::optional<std::uint32_t> top_logprobs;
+    bool prompt_logprobs = false;
     std::uint32_t text_kv_page_entitlement    = 0;
     std::uint32_t backend_kv_page_entitlement = 0;
     runtime::LaneId destination{};
@@ -487,6 +489,9 @@ struct RequestControl {
     bool publish_continuation = true;
     // Top-K next-token export requested by this request (0/absent = no export).
     std::optional<std::uint32_t> top_logprobs;
+    // Teacher-forced prompt scoring requested by this request (see
+    // ResolvedExecutionOptions::prompt_logprobs).
+    bool prompt_logprobs = false;
 
     struct Prefill {
         PreparedPromptData prompt;
@@ -518,6 +523,10 @@ struct RequestControl {
         bool prepare_mtp                    = false;
         ReusePath reuse                     = ReusePath::Root;
         MtpBridgeMode mtp_bridge            = MtpBridgeMode::None;
+        // Prompt scoring accumulator: natural-log teacher-forced probability per prompt
+        // position, indexed by absolute position; entry 0 stays 0 (no conditional
+        // probability) and only positions this transaction prefilled carry values.
+        std::vector<float> prompt_score;
     };
 
     std::optional<Prefill> prefill;
@@ -883,6 +892,8 @@ public:
     PinnedHostBuffer round_host;
     std::optional<PinnedHostBuffer> score_logprobs_host;
     std::optional<PinnedHostBuffer> top_logprobs_host;
+    // Per-chunk D2H scratch for the prompt scoring export (prefill_chunk FP32 entries).
+    std::optional<PinnedHostBuffer> prompt_score_host;
     TokenId* host_tokens = nullptr;
     std::optional<PinnedHostBuffer> ordinary_host;
     qwen3_6::OrdinaryDecodeIngress* ordinary_host_ingress = nullptr;

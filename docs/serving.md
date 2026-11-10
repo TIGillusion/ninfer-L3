@@ -52,6 +52,8 @@ cannot be combined with `--vision`. A later request cannot enable a capability o
 | `GET /v1/models` | configured OpenAI model alias and effective `max_model_len` |
 | `GET /v1/models/{id}` | lookup of the configured alias and effective `max_model_len` |
 | `POST /v1/chat/completions` | OpenAI-style chat generation |
+| `POST /v1/score` | research: teacher-forced per-token logprobs and perplexity |
+| `POST /v1/next-token` | research: exact next-token probability distribution |
 | `POST /v1/responses` | OpenAI Responses Core generation, state, typed Items, and SSE |
 | `POST /v1/responses/input_tokens` | Responses prompt-token count without generation |
 | `GET /v1/responses/{id}` | retrieve a locally stored terminal Response |
@@ -127,7 +129,7 @@ Known constrained-decoding aliases (`grammar`, `structured_outputs`, `guided_jso
 as unknown hints.
 
 Semantically neutral fields do not make an otherwise executable request fail. All-zero
-`logit_bias`, `logprobs:false`, `top_logprobs:0`, `verbosity:"medium"`, empty legacy tool controls,
+`logit_bias`, `logprobs:false`, `verbosity:"medium"`, empty legacy tool controls,
 text-only `audio` configuration, and `prediction` are accepted without changing Engine execution.
 Metadata, user/safety identifiers, service-tier and prompt-cache hints are likewise advisory.
 Unknown top-level fields are ignored.
@@ -225,7 +227,10 @@ finish-reason chunk and `[DONE]`. When `stream_options.include_usage` is true, a
 `choices` chunk contains completed usage. Aggregate and streamed usage include cached prompt tokens
 and reasoning-token details; choices carry `logprobs: null` when log probabilities were not
 requested, and aggregate assistant messages carry `refusal: null` because refusal output is not
-supported.
+supported. When `top_logprobs` is set, an aggregate response renders the exported first-token
+distribution as the single `logprobs.content[0]` entry (exact raw softmax, no temperature or
+penalties); streamed responses keep `logprobs: null`. The whole-completion `logprobs:true`
+request remains rejected.
 
 ### llama.cpp-compatible request observations
 
@@ -330,6 +335,69 @@ the prepared token count and configured context ceiling. A media preprocessing r
 returns HTTP 400 `media_budget_exceeded`. HTTP 413 `request_too_large` is reserved for a raw request
 body that exceeds `--max-request-mib` before JSON parsing; it is not used for model-context or media
 resource errors.
+
+## Research endpoints
+
+Two dedicated endpoints expose the model's raw distributions for research tooling. Both are
+authenticated like any `/v1` route, accept an optional `model` field (validated against the
+configured alias), run through the normal FIFO/queue contract, and return errors in the
+OpenAI error shape. A reverse proxy (for example a litellm router) may not forward unknown
+paths; call these endpoints on the Engine port directly.
+
+### POST /v1/score
+
+Teacher-forced causal scoring of a raw UTF-8 text (artifact tokenizer only, no chat template):
+
+```json
+{"model": "qwen3.8-27b", "text": "some text to score"}
+```
+
+The response carries one entry per prompt token: `tokens[i]` is the decoded surface text and
+`token_logprobs[i]` is the natural-log probability of that token under its prefix
+(`log p(tokens[i] | tokens[0..i))`). `token_logprobs[0]` is `null` because position 0 has no
+conditional probability. `aggregate` reports `scored_tokens`, `total_nll`, `mean_nll`, and
+`perplexity = exp(mean_nll)` over positions `[1, token_count)`.
+
+```json
+{"object": "score", "model": "qwen3.8-27b", "token_count": 5,
+ "tokens": ["..."], "token_logprobs": [null, -1.2, ...],
+ "aggregate": {"scored_tokens": 4, "total_nll": 6.1, "mean_nll": 1.5,
+               "perplexity": 4.5}}
+```
+
+Constraints: text must tokenize to at least 2 tokens and at most `max_context - 1` tokens
+(the engine reserves one generated-token slot); longer texts return HTTP 400 and should be
+windowed by the caller (`ninfer-perplexity` implements fixed-window scoring offline). A scoring
+request always physically prefills the whole prompt (prefix reuse is disabled for it, so
+repeated scoring of the same text is deterministic), consumes one admission slot like any
+generation, and discards its single generated token.
+
+### POST /v1/next-token
+
+Exact next-token probability distribution after a prompt. Exactly one of `messages`
+(chat template applied through the normal translation path) or `text` (raw tokenizer) must be
+present; `top_k` (default 10, range [1,100]) sizes the export:
+
+```json
+{"model": "qwen3.8-27b", "messages": [{"role": "user", "content": "The capital of"}],
+ "top_k": 5}
+```
+
+The response lists the top-K of the exact full-vocabulary softmax over the raw prefill logits
+(no sampling temperature, top-p, or penalties), each entry with `token_id`, `token_text`,
+`probability`, and `logprob`. `chosen` reports the token the engine actually sampled (greedy
+under this endpoint) with its raw `logprob`:
+
+```json
+{"object": "next_token", "model": "qwen3.8-27b", "prompt_token_count": 12,
+ "top_k": 5,
+ "top": [{"token_id": 7736, "token_text": " France", "probability": 0.83,
+           "logprob": -0.19}],
+ "chosen": {"token_text": " France", "logprob": -0.19}}
+```
+
+This is the same distribution the Chat Completions `top_logprobs` field exports for the first
+generated token.
 
 ## OpenAI prompt caching
 

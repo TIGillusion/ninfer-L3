@@ -196,6 +196,11 @@ struct RequestRecord {
     // Next-token top-K export for this request (see ResolvedExecutionOptions::top_logprobs);
     // filled by the completing prefill step and copied into the final GenerationResult.
     std::optional<std::vector<::ninfer::TopLogprob>> next_token_top_logprobs;
+    // Natural-log probability of the sampled first token under the exported distribution.
+    std::optional<float> first_token_logprob;
+    // Teacher-forced per-position prompt logprobs (see ResolvedExecutionOptions::
+    // prompt_logprobs); filled by the completing prefill step.
+    std::optional<std::vector<float>> prompt_token_logprobs;
 
     std::mutex mutex;
     std::condition_variable cv;

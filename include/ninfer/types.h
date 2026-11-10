@@ -322,6 +322,10 @@ struct RequestOptions {
     // Export the top-K next-token probabilities of the first generated token. 0/absent means
     // no export. The export is a prefill-only side channel and never affects sampling.
     std::optional<std::uint32_t> top_logprobs;
+    // Export the causal log probability of every prompt token under the teacher-forced
+    // prefix (log p(tokens[i] | tokens[0..i)), natural log; position 0 has no probability).
+    // Prefill-only side channel, never affects sampling, and rejected for media requests.
+    bool prompt_logprobs = false;
 };
 
 enum class MediaKind : std::uint8_t {
@@ -805,10 +809,12 @@ struct MaterializationDiagnostics {
 
 // One entry of the next-token probability distribution exported from a generation request.
 // Probability is the exact full-vocabulary softmax over the raw prefill logits (no sampling
-// temperature/penalties applied), so the exported entries sum to at most 1.
+// temperature/penalties applied), so the exported entries sum to at most 1; logprob is the
+// natural log of that probability.
 struct TopLogprob {
     std::uint32_t token_id   = 0;
     float         probability = 0.0F;
+    float         logprob     = 0.0F;
     std::string   token_text;
 };
 
@@ -834,6 +840,14 @@ struct GenerationResult {
     // first generated token; the distribution is computed from prefill logits and does not
     // require any decode round.
     std::optional<std::vector<TopLogprob>> next_token_top_logprobs;
+    // Set only when the request asked for next-token log probabilities. The natural-log
+    // probability of the actually sampled first generated token under that same raw
+    // prefill distribution (no temperature/penalties).
+    std::optional<float> first_token_logprob;
+    // Set only when the request asked for prompt scoring (RequestOptions::prompt_logprobs).
+    // Natural-log teacher-forced probability of each prompt token, aligned with the prepared
+    // prompt token ids; entry 0 is unset because position 0 has no conditional probability.
+    std::optional<std::vector<float>> prompt_token_logprobs;
 };
 
 struct ArenaMemorySummary {

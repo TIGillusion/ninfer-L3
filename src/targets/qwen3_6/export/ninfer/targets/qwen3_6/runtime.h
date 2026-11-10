@@ -692,6 +692,12 @@ struct PrefillProgress {
     // Exact top-K next-token distribution of the first generated token; present only on the
     // completing step when the request enabled the export (never affects sampling).
     std::optional<std::vector<::ninfer::TopLogprob>> next_token_top_logprobs;
+    // Natural-log probability of the actually sampled first token under the same raw
+    // distribution; present alongside next_token_top_logprobs when sampled in-domain.
+    std::optional<float> first_token_logprob;
+    // Teacher-forced per-position prompt logprobs (RequestOptions::prompt_logprobs);
+    // present only on the completing step, entry 0 unset.
+    std::optional<std::vector<float>> prompt_token_logprobs;
 };
 
 enum class CaptureStatePlacement : std::uint8_t {

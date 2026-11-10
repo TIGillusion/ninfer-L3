@@ -248,6 +248,9 @@ RequestBasePlan ProgramImplCore::plan_request(const PreparedPromptData& prompt,
         throw std::invalid_argument("Vision is disabled for this Engine");
     }
     validate_sampling(options.sampling);
+    if (options.prompt_logprobs && prompt.has_media()) {
+        throw std::invalid_argument("prompt_logprobs requires a text-only request");
+    }
 
     auto base                             = std::make_unique<RequestBasePlanImpl>();
     base->context_cache                   = prompt.context_cache;
@@ -262,6 +265,7 @@ RequestBasePlan ProgramImplCore::plan_request(const PreparedPromptData& prompt,
                                                : FinishReason::ContextCapacity;
     base->sampling                       = translate_sampling(options.sampling);
     base->top_logprobs                   = options.top_logprobs;
+    base->prompt_logprobs                = options.prompt_logprobs;
     base->allow_prefix_reuse             = options.allow_prefix_reuse;
     base->summary.publish_continuation =
         options.allow_prefix_reuse && prompt.identity.reusable && context_cache.enabled;
@@ -634,6 +638,7 @@ std::optional<AdmissionCandidate> ProgramImplCore::inspect_lane(
     plan->summary                     = base.summary;
     plan->sampling                    = base.sampling;
     plan->top_logprobs                = base.top_logprobs;
+    plan->prompt_logprobs             = base.prompt_logprobs;
     plan->text_kv_page_entitlement    = base.text_kv_page_entitlement;
     plan->backend_kv_page_entitlement = base.backend_kv_page_entitlement;
     plan->root_rebuild_work           = base.root_rebuild_work;
