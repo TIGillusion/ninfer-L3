@@ -1,0 +1,72 @@
+# NInfer Production - docker-compose.yml
+# Single-GPU inference server with L3 disk cache, research API, and auto-recovery.
+#
+# Prerequisites:
+#   - NVIDIA Container Toolkit
+#   - Model artifact downloaded to ./models/
+#   - L3 cache directory at ./l3cache/
+#
+# Usage:
+#   docker compose up -d
+#   curl http://127.0.0.1:8080/health
+
+services:
+  ninfer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ninfer:latest
+    container_name: ninfer
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models:/models:ro
+      - l3cache:/prod-kvcache
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    deploy:
+      resources:
+        limits:
+          memory: 32G
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command:
+      - ninfer-serve
+      - /models/qwen3_8_27b_nvfp4.ninfer
+      - --max-context=400000
+      - --kv-capacity=628000
+      - --max-concurrency=5
+      - --kv-dtype=nvfp4
+      - --device-state-slots=2
+      - --host-state-slots=16
+      - --host-kv-mib=6144
+      - --spec=mtp
+      - --draft-tokens=3
+      - --lm-head-draft
+      - --disk-kv-path=/prod-kvcache/l3
+      - --disk-kv-gib=88
+      - --disk-kv-restore
+      - --admission-order=prefill-first
+      - --prefill-yield-max-ms=5000
+      - --pending-timeout-ms=6000
+      - --checkpoint-watermark-pct=80
+      - --min-persist-tokens=8192
+      - --preserve-thinking
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 180s
+      retries: 3
+
+volumes:
+  l3cache:
