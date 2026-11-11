@@ -2,3 +2,23 @@ _drift/
 Dockerfile.local.bak
 *.log
 build/
+
+# Private requests, debug exports, and local agent sessions
+/临时/
+/_extract/
+/.zcode/
+/BASELINE.json
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+*.p12
+*.pfx
+*.dpapi
+/logs/
+/eval/runs/
+/eval/server-logs/
+__pycache__/
+*.pyc

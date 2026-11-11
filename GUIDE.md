@@ -1,4 +1,4 @@
-# NInfer 全面指南
+# NInfer-L3 全面指南
 
 > 从零开始了解、部署、使用、维护 NInfer 推理引擎 —— 写给所有人群的完整参考文档。
 
@@ -168,8 +168,8 @@ NInfer 支持 5 个显式注册的模型格式（`.ninfer` artifact）：
 
 ```bash
 # 克隆仓库
-git clone https://github.com/TIGillusion/ninfer-engine.git
-cd ninfer-engine
+git clone https://github.com/TIGillusion/ninfer-L3.git
+cd ninfer-L3
 
 # 安装依赖（Debian/Ubuntu）
 apt-get install --yes --no-install-recommends \
@@ -765,5 +765,5 @@ vLLM 是通用框架，支持多模型多卡但单卡性能不如专用引擎。
 
 ---
 
-*文档版本：2026-11-10 | 基于 NInfer Production（TIGillusion/ninfer-engine private fork）*
+*文档版本：2026-11-10 | 基于 NInfer-L3（TIGillusion/ninfer-L3）*
 *引擎版本：ec745df0（mlock-anon + transfer_stream + 研究接口）*

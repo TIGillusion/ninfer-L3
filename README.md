@@ -1,4 +1,4 @@
-# NInfer Production
+# NInfer-L3
 
 > From-scratch C++/CUDA inference engine. Production-hardened for 24/7 agent serving
 > with L3 disk-cache reuse, research API, and autonomous recovery.
@@ -51,8 +51,8 @@ Each artifact embeds the tokenizer, chat template, and media frontend resources.
 ### Build from source
 
 ```bash
-git clone https://github.com/TIGillusion/ninfer-engine.git
-cd ninfer-engine
+git clone https://github.com/TIGillusion/ninfer-L3.git
+cd ninfer-L3
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```

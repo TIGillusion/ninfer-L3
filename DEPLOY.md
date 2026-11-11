@@ -1,4 +1,4 @@
-# NInfer Production Deployment Guide
+# NInfer-L3 Deployment Guide
 
 This document is written for autonomous agents (or operators) who need to deploy
 NInfer from source to a working inference server. Follow the steps in order.
@@ -70,8 +70,8 @@ This isolates paging I/O from the engine's L3 cache I/O on the NVMe.
 ## Step 3: Clone and build
 
 ```bash
-git clone https://github.com/TIGillusion/ninfer-engine.git
-cd ninfer-engine
+git clone https://github.com/TIGillusion/ninfer-L3.git
+cd ninfer-L3
 
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DNINFER_BUILD_APPS=ON -DBUILD_TESTING=OFF -DNINFER_BUILD_BENCHMARKS=OFF

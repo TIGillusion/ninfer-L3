@@ -31,3 +31,16 @@ models
 *.qus
 *.safetensors
 *.sqlite
+
+# Exclude local private material from Docker build contexts.
+临时
+_extract
+.zcode
+BASELINE.json
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.dpapi
